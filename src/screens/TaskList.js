@@ -12,12 +12,19 @@ import {
 
 import AsyncStorage from '@react-native-community/async-storage'
 import Icon from 'react-native-vector-icons/FontAwesome'
+import axios from 'axios'
 
 import moment from 'moment'
 import 'moment/locale/pt-br'
 
+import { server, showError, showSuccess } from '../common'
 import commonStyles from '../commonStyles'
+
 import todayImage from '../../assets/imgs/today.jpg'
+import tomorrowImage from '../../assets/imgs/tomorrow.jpg'
+import weekImage from '../../assets/imgs/week.jpg'
+import monthImage from '../../assets/imgs/month.jpg'
+
 import Task from '../components/Task'
 import AddTask from './AddTask'
 
@@ -37,8 +44,26 @@ export default class TaskList extends Component {
     //assim que o componente for montado ele chama esse metodo de ciclo de vida
     componentDidMount = async () => {
         const stateString = await AsyncStorage.getItem('tasksState')
-        const state = JSON.parse(stateString) || initialState
-        this.setState(state, this.filterTasks)
+        const savedState = JSON.parse(stateString) || initialState
+        this.setState({
+            showDoneTasks: savedState.showDoneTasks
+        }, this.filterTasks)
+        
+        this.loadTasks()
+    }
+
+    //funcao responsavel por carregar as tasks
+    loadTasks = async () => {
+        try {
+            const maxDate = moment()
+                .add({ days: this.props.daysAhead}) //adicionar o objeto dias a frente
+                .format('YYYY-MM-DD 23:59:59') //.format gera uma data que o sql espera receber que é ano/mes/dia, nessa caso foi adicionado horas pra usar no maximo a data de hoje ate 23:59:59
+            const res = await axios.get(`${server}/tasks?date=${maxDate}`)
+            this.setState({ tasks: res.data }, this.filterTasks) //res.data é exatamente o que servidor retornou, nesse caso foram as listas das tasks obtidas no banco de dados
+        }
+        catch(e) {
+            showError(e)
+        }
     }
     
     //essa funcao ira inverter o valor de estado do showDoneTasks sempre que for chamada
@@ -63,42 +88,70 @@ export default class TaskList extends Component {
 
         //abaixo muda o valor do estado 
         this.setState({ visibleTasks }) // outra forma de implementar seria visibleTasks: visibleTasks
-        AsyncStorage.setItem('tasksState', JSON.stringify(this.state))
+        AsyncStorage.setItem('tasksState', JSON.stringify({
+            showDoneTasks: this.state.showDoneTasks
+        }))
     }
 
-    toggleTask = taskId => {
-        const tasks = [...this.state.tasks] //criando uma copia do array
-        tasks.forEach(task => {  //percorrendo cada elemento do array
-            if(task.id === taskId) {
-                task.doneAt = task.doneAt ? null : new Date() //trocando a data do elemento, para a data de conclusao ser a data do clique do usuario
-            }
-        })
+    toggleTask = async taskId => {
+       try {
+           await axios.put(`${server}/tasks/${taskId}/toggle`)
+           this.loadTasks()
 
-        this.setState({ tasks: tasks}, this.filterTasks) //alterando o estado a partir dessa funcao, e usando um calback
+       }
+       catch(e) {
+           showError(e)
+       }
     }
 
     //funcao ira adicionar uma nova tasks dentro do estado da aplicacao
-    addTask = newTask => {
+    addTask = async newTask => {
         if( !newTask.desc || !newTask.desc.trim() ) {
             Alert.alert('Dados Inválidos', 'Descrição não informada !')
             return
         }
 
-        const tasks = [...this.state.tasks]
-        tasks.push({
-            id: Math.random(),
-            desc: newTask.desc,
-            estimateAt: newTask.date,
-            doneAt: null
-        })
+        try {
+            await axios.post(`${server}/tasks`,{    //inserindo a task no backend
+                desc: newTask.desc,                 
+                estimateAt: newTask.date
+            })
 
-        this.setState({ tasks, showAddTaskModal: false }, this.filterTasks) //seta os valores e esconde o modal, e atualizada todas as taks visiveis
+            this.setState({ showAddTaskModal: false }, this.loadTasks) //seta os valores e esconde o modal, e atualizada todas as taks visiveis
+        }
+        catch(e) {
+            showError(e)
+        }
+        
     }
 
-    //funcao que ira deletar tasks pelo id (ele pega o id por referencia na chamada)
-    deleteTask = id => {
-        const tasks = this.state.tasks.filter(task => task.id !== id) 
-        this.setState({ tasks }, this.filterTasks) //vai atualiazar o estado com um novo array deiaxndo as tasks nao excluidas
+    
+    deleteTask = async taskId => {
+        try {
+            await axios.delete(`${server}/tasks/${taskId}`)
+            this.loadTasks()
+        }
+        catch(e) {
+            showError(e)
+        }
+    }
+
+    getImage = () => {
+        switch(this.props.daysAhead) {
+            case 0: return todayImage
+            case 1: return tomorrowImage
+            case 7: return weekImage
+            default: return monthImage
+        }
+    }
+
+    getColor = () => {
+        switch(this.props.daysAhead) {
+            case 0: return commonStyles.colors.today
+            case 1: return commonStyles.colors.tomorrow
+            case 7: return commonStyles.colors.week
+            default: return commonStyles.colors.month
+        }
     }
 
     render() {
@@ -110,14 +163,17 @@ export default class TaskList extends Component {
                     onCancel={() => this.setState({ showAddTaskModal: false })} 
                     onSave={this.addTask}
                 />
-                <ImageBackground style={styles.background} source={todayImage}>
+                <ImageBackground style={styles.background} source={this.getImage()}>
                     <View style={styles.iconBar}>
+                        <TouchableOpacity onPress={() => this.props.navigation.openDrawer() }>
+                            <Icon name='bars' size={20} color={commonStyles.colors.secondary} />
+                        </TouchableOpacity>
                         <TouchableOpacity onPress={this.toggleFilter}>
                             <Icon name={this.state.showDoneTasks ? 'eye' : 'eye-slash' } size={20} color={commonStyles.colors.secondary} />
                         </TouchableOpacity>
                     </View>
                     <View style={styles.titleBar}>
-                        <Text style={styles.title}>Hoje</Text>
+                        <Text style={styles.title}>{this.props.title}</Text>
                         <Text style={styles.subTitle}>{today}</Text>
                     </View>
                 </ImageBackground>
@@ -128,7 +184,7 @@ export default class TaskList extends Component {
                    />
                 </View>   
                 <TouchableOpacity 
-                    style={styles.addButton} 
+                    style={[ styles.addButton, {backgroundColor: this.getColor()} ]}
                     activeOpacity={0.7}
                     onPress={ () => this.setState({ showAddTaskModal: true})}
                 >
@@ -162,7 +218,7 @@ const styles = StyleSheet.create({
         color: commonStyles.colors.secondary,
         fontSize: 50,
         marginLeft: 20,
-        marginBottom: 20
+        marginBottom: 10
     },
     subTitle: {
         fontFamily: commonStyles.fontFamily,
@@ -174,7 +230,7 @@ const styles = StyleSheet.create({
     iconBar: {
         flexDirection: 'row',
         marginHorizontal: 20,
-        justifyContent: 'flex-end',
+        justifyContent: 'space-between',
         marginTop: Platform.OS === 'ios' ? 40 : 10
     },
     addButton: {
@@ -184,7 +240,6 @@ const styles = StyleSheet.create({
         width: 50,
         height: 50,
         borderRadius: 25,
-        backgroundColor: commonStyles.colors.today,
         justifyContent: 'center',
         alignItems: 'center'
     }
